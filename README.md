@@ -37,10 +37,15 @@ Compile this project using the standard cmake routine:
 
 This should find and build the dependencies and create a `example_bin` binary.
 
+On Windows,
+From Visual Studio, open tori.sln file in build/.
+Right click on Solution, change starting project to tori.  
+
+
 ## Run
 
 From within the `build` directory just issue:
 
-    ./example
+    ./tori
 
-A glfw app should launch displaying a 3D cube.
+A glfw app should launch displaying fundamental cycles on fertitlity mesh.
