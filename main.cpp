@@ -44,6 +44,11 @@ std::vector<std::unordered_map<int,int>> VVE;
 
 const Eigen::RowVector3d red(0.8, 0.2, 0.2), blue(0.2, 0.2, 0.8), green(0.2,0.8,0.2);
 
+
+// used for the criteria of determining a good cycle
+bool CompareCycles(std::vector<int>&, std::vector<int>&);
+float DistToCentroid(std::vector<int>&);
+
 struct WeightedEdge {
     float dist = 0,_dist=0;
     int src, dst,index;
@@ -217,11 +222,10 @@ void visualize_cycles(igl::opengl::glfw::Viewer &viewer, std::vector<std::vector
 }
 
 
-void find_good_cycles(std::vector<std::vector<int>>& cycles) {
-}
+
 /*
 * 
-* Sample version based on length of cycles;
+* Sample version based on length of cycles; */
 void find_good_cycles(std::vector<std::vector<int>> &cycles) {
     //Find a good cycle and store it in goodCycles
     std::vector<std::vector<int>> uniqueCycles;
@@ -241,9 +245,9 @@ void find_good_cycles(std::vector<std::vector<int>> &cycles) {
             flag = 0;
         }
     }
-    sort(uniqueCycles.begin(), uniqueCycles.end(), [](std::vector<int>& a, std::vector<int>& b) -> bool {
-        return a.size() < b.size();
-        });
+    sort(uniqueCycles.begin(), uniqueCycles.end(), CompareCycles);//[](std::vector<int>& a, std::vector<int>& b) -> bool {
+        //return a.size() < b.size();
+        //});
     if (uniqueCycles.size() > 0) {
         goodCycles.push_back(uniqueCycles[0]);
         int goodCycleIndex = 0;
@@ -254,7 +258,7 @@ void find_good_cycles(std::vector<std::vector<int>> &cycles) {
         goodEdgeIndexVec.insert(VVE[uniqueCycles[0][0]][uniqueCycles[0].back()]);
     }
 }
-*/
+/**/
 void cut_graph(std::vector<std::vector<int>>& goodCycles, igl::opengl::glfw::Viewer& viewer ) {
 
     /*
@@ -418,12 +422,12 @@ int main(int argc, char *argv[])
       else {
           tree_cotree(primalEdgesMax, dualEdgesMax, cycles,viewer);
           find_good_cycles(cycles);
-          //visualize_cycles(viewer, cycles, red);
+          visualize_cycles(viewer, cycles, red);
       }
       ++iter;
 
   }
-  cut_graph(goodCycles, viewer);
+  //cut_graph(goodCycles, viewer);
 
 
   //visualize_cycles(viewer, goodCycles, green);
@@ -447,4 +451,45 @@ int main(int argc, char *argv[])
   viewer.data().show_lines = false;
 
   viewer.launch();
+}
+
+float DistToCentroid(std::vector<int>& cycle)
+{
+
+    Eigen::MatrixXd cycleV(cycle.size(), 3);
+    Eigen::MatrixXi cycleF(1, cycle.size());
+    Eigen::MatrixXd BC;
+
+    for (unsigned int i = 0; i < cycle.size(); ++i)
+    {
+        cycleV.row(i) = V.row(cycle[i]);
+        cycleF(0, i) = i;
+    }
+    igl::barycenter(cycleV, cycleF, BC);
+
+    float totalDistance = 0.0f;
+
+    for (unsigned int i = 0; i < cycleV.rows(); ++i)
+    {
+        totalDistance += (cycleV.row(i) - BC.row(0)).norm();
+    }
+
+    return 0.04 * totalDistance;
+}
+
+bool CompareCycles(std::vector<int>& a, std::vector<int>& b)
+
+
+{
+    float pathCostA = 0.0f;
+    float pathCostB = 0.0f;
+
+    pathCostA += a.size();
+    pathCostB += b.size();
+
+    pathCostA += DistToCentroid(a);
+    pathCostB += DistToCentroid(b);
+
+    return pathCostA < pathCostB;
+
 }
