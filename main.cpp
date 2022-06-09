@@ -21,6 +21,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include "graph.h"
+#include <igl/exact_geodesic.h>
 /*
 Eigen::MatrixXi TT;
 Eigen::MatrixXi TTi;
@@ -217,11 +218,6 @@ void visualize_cycles(igl::opengl::glfw::Viewer &viewer, std::vector<std::vector
 }
 
 
-void find_good_cycles(std::vector<std::vector<int>>& cycles) {
-}
-/*
-* 
-* Sample version based on length of cycles;
 void find_good_cycles(std::vector<std::vector<int>> &cycles) {
     //Find a good cycle and store it in goodCycles
     std::vector<std::vector<int>> uniqueCycles;
@@ -254,22 +250,47 @@ void find_good_cycles(std::vector<std::vector<int>> &cycles) {
         goodEdgeIndexVec.insert(VVE[uniqueCycles[0][0]][uniqueCycles[0].back()]);
     }
 }
-*/
+
 void cut_graph(std::vector<std::vector<int>>& goodCycles, igl::opengl::glfw::Viewer& viewer ) {
 
     /*
     Min cut on graph. Need to update source weights and sink weights
     
     */
+    Eigen::VectorXi FS, VT, FT;
+    Eigen::VectorXd d, d_;
+    
+    Eigen::VectorXi VS,VS_;
+    VT.setLinSpaced(V.rows(), 0, V.rows() - 1);
+    int size = 0;
+    for (auto i = 1; i < goodCycles.size(); i++) {
+        size += goodCycles[i].size();
+    }
+    VS.resize(goodCycles[0].size(), 1);
+    VS_.resize(size, 1);
     typedef Graph<int, int, int> GraphType;
     GraphType* g = new GraphType( V.rows(), EV.rows());
 
     for (auto i=0; i < V.rows(); i++) {
         g->add_node();
     }
-    for (auto i = 0; i < EV.rows(); i++) {
-        g->add_edge(EV(i,0),EV(i,1), 10,10);
+    
+    for (auto j = 0; j < goodCycles[0].size(); j++) {
+        VS.row(j) << goodCycles[0][j];
+        //g->add_tweights(goodCycles[0][j], 1000, -1000);
     }
+    for (auto i = 1; i < goodCycles.size(); i++) {
+        for (auto j = 0; j < goodCycles[i].size(); j++) {
+            VS_.row(j) << goodCycles[i][j];
+            //g->add_tweights(goodCycles[i][j], -1000, 1000);
+        }
+    }
+    igl::exact_geodesic(V, F, VS, FS, VT, FT, d);
+    igl::exact_geodesic(V, F, VS_, FS, VT, FT, d_);
+    for (auto j = 0; j < V.rows(); j++) {
+        //g->add_tweights(j, d[j]*1000,-d_[j]*1000);
+    }
+
     for (auto j = 0; j < goodCycles[0].size(); j++) {
         g->add_tweights(goodCycles[0][j], 1000, -1000);
     }
@@ -277,6 +298,10 @@ void cut_graph(std::vector<std::vector<int>>& goodCycles, igl::opengl::glfw::Vie
         for (auto j = 0; j < goodCycles[i].size(); j++) {
             g->add_tweights(goodCycles[i][j], -1000, 1000);
         }
+    }
+    
+    for (auto i = 0; i < EV.rows(); i++) {
+        g->add_edge(EV(i, 0), EV(i, 1), 100,100);
     }
     int flow = g->maxflow();
     for (auto i = 0; i < EV.rows(); i++) {
