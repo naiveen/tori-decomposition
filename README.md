@@ -1,3 +1,5 @@
+Include block.h, block.cpp, graph.h, maxflow.cpp, instances.inc as source files on visual studio in order to avoid compilation errors. Or comment the function "cut_graph" and the line "#include "graph.h" to visualize just the fundamental cycles.
+
 # libigl example project
 
 A blank project example showing how to use libigl and cmake. Feel free and

@@ -21,7 +21,6 @@
 #include <unordered_set>
 #include <unordered_map>
 #include "graph.h"
-#include <igl/exact_geodesic.h>
 /*
 Eigen::MatrixXi TT;
 Eigen::MatrixXi TTi;
@@ -41,14 +40,19 @@ Eigen::MatrixXd EVW;
 
 std::vector<std::vector<int>> goodCycles;
 std::unordered_set<int> goodEdgeIndexVec;
-std::vector<std::unordered_map<int,int>> VVE;
+std::vector<std::unordered_map<int, int>> VVE;
 
-const Eigen::RowVector3d red(0.8, 0.2, 0.2), blue(0.2, 0.2, 0.8), green(0.2,0.8,0.2);
+const Eigen::RowVector3d red(0.8, 0.2, 0.2), blue(0.2, 0.2, 0.8), green(0.2, 0.8, 0.2);
+
+
+// used for the criteria of determining a good cycle
+bool CompareCycles(std::vector<int>&, std::vector<int>&);
+float DistToCentroid(std::vector<int>&);
 
 struct WeightedEdge {
-    float dist = 0,_dist=0;
-    int src, dst,index;
-    WeightedEdge( int index, int src, int dst, float dist) : index(index), src(src), dst(dst), dist(dist),_dist(dist) {};
+    float dist = 0, _dist = 0;
+    int src, dst, index;
+    WeightedEdge(int index, int src, int dst, float dist) : index(index), src(src), dst(dst), dist(dist), _dist(dist) {};
 };
 class UnionFind {
 private:
@@ -112,7 +116,7 @@ void kruskalMST(int n, std::vector<WeightedEdge>& edges, std::vector<WeightedEdg
         });
 }
 
-void dfs(std::vector<std::vector<int>>& VE, std::vector<int>&cycle, int prevIndex, int curIndex, bool &cycleflag) {
+void dfs(std::vector<std::vector<int>>& VE, std::vector<int>& cycle, int prevIndex, int curIndex, bool& cycleflag) {
 
     if (curIndex == cycle[0]) {
         cycleflag = true;
@@ -121,7 +125,7 @@ void dfs(std::vector<std::vector<int>>& VE, std::vector<int>&cycle, int prevInde
     for (auto i = 0; i < VE[curIndex].size(); i++) {
         if (VE[curIndex][i] == prevIndex)
             continue;
-        dfs(VE, cycle, curIndex, VE[curIndex][i], cycleflag );
+        dfs(VE, cycle, curIndex, VE[curIndex][i], cycleflag);
         if (cycleflag) {
             cycle.push_back(curIndex);
             break;
@@ -130,7 +134,7 @@ void dfs(std::vector<std::vector<int>>& VE, std::vector<int>&cycle, int prevInde
     return;
 }
 
-void tree_cotree(std::vector<WeightedEdge> & primalEdges, std::vector<WeightedEdge>& dualEdges, std::vector<std::vector<int>>& cycles, igl::opengl::glfw::Viewer& viewer) {
+void tree_cotree(std::vector<WeightedEdge>& primalEdges, std::vector<WeightedEdge>& dualEdges, std::vector<std::vector<int>>& cycles, igl::opengl::glfw::Viewer& viewer) {
     /*
     * Given Primary and Dual edges, the function computes 2*g good cycles.
     */
@@ -142,24 +146,24 @@ void tree_cotree(std::vector<WeightedEdge> & primalEdges, std::vector<WeightedEd
     std::unordered_set<int> uos;
 
     //Assign low weight to edges that form good cycles
-    for (auto &index : goodEdgeIndexVec) {
+    for (auto& index : goodEdgeIndexVec) {
         primalEdges[index].dist = 0;
         dualEdges[index].dist = 0;
     }
     kruskalMST(V.rows(), primalEdges, primalSpan);
-    
+
     bool flag = 0;
     //Add vertex to edge relation for edges in spanning tree
     for (auto edge : primalSpan) {
         uos.insert(edge.index);
         VE[edge.dst].push_back(edge.src);
         VE[edge.src].push_back(edge.dst);
-        if(flag)
+        if (flag)
             viewer.data().add_edges(V.row(edge.src), V.row(edge.dst), blue);
     }
 
     //Assign high weight to dual graph edges corresponding to primary graph edges
-    for (auto& index :uos)  {
+    for (auto& index : uos) {
         dualEdges[index].dist = INT_MAX;
     }
 
@@ -170,7 +174,7 @@ void tree_cotree(std::vector<WeightedEdge> & primalEdges, std::vector<WeightedEd
         dualEdges[index].dist = dualEdges[index]._dist;
     }
 
-    for (auto &index : goodEdgeIndexVec) {
+    for (auto& index : goodEdgeIndexVec) {
         primalEdges[index].dist = primalEdges[index]._dist;
         dualEdges[index].dist = dualEdges[index]._dist;
     }
@@ -178,7 +182,7 @@ void tree_cotree(std::vector<WeightedEdge> & primalEdges, std::vector<WeightedEd
     for (auto edge : dualSpan) {
         uos.insert(edge.index);
         if (flag) {
-            viewer.data().add_edges(FCV.row(edge.src), (V.row(EV(edge.index,0)) + V.row(EV(edge.index, 1))) / 2, red);
+            viewer.data().add_edges(FCV.row(edge.src), (V.row(EV(edge.index, 0)) + V.row(EV(edge.index, 1))) / 2, red);
             viewer.data().add_edges(FCV.row(edge.dst), (V.row(EV(edge.index, 0)) + V.row(EV(edge.index, 1))) / 2, red);
         }
     }
@@ -187,7 +191,7 @@ void tree_cotree(std::vector<WeightedEdge> & primalEdges, std::vector<WeightedEd
 
     for (auto i = 0; i < EV.rows(); i++) {
         if (uos.count(i) == 0) {
-            
+
             std::vector<int> cycle;
             cycle.push_back(EV(i, 0));
             cycle.push_back(EV(i, 1));
@@ -201,7 +205,7 @@ void tree_cotree(std::vector<WeightedEdge> & primalEdges, std::vector<WeightedEd
         }
     }
 }
-void visualize_cycles(igl::opengl::glfw::Viewer &viewer, std::vector<std::vector<int>> &cycles, Eigen::RowVector3d color) {
+void visualize_cycles(igl::opengl::glfw::Viewer& viewer, std::vector<std::vector<int>>& cycles, Eigen::RowVector3d color) {
     int i = 0;
     sort(cycles.begin(), cycles.end(), [](std::vector<int>& a, std::vector<int>& b) -> bool {
         return a.size() < b.size();
@@ -218,10 +222,14 @@ void visualize_cycles(igl::opengl::glfw::Viewer &viewer, std::vector<std::vector
 }
 
 
-void find_good_cycles(std::vector<std::vector<int>> &cycles) {
+
+/*
+*
+* Sample version based on length of cycles; */
+void find_good_cycles(std::vector<std::vector<int>>& cycles) {
     //Find a good cycle and store it in goodCycles
     std::vector<std::vector<int>> uniqueCycles;
-    for (auto cycle: cycles) {
+    for (auto cycle : cycles) {
         bool flag = 0;
         if (goodEdgeIndexVec.count(VVE[cycle[0]][cycle.back()]) > 0) {
             flag = 1;
@@ -237,9 +245,9 @@ void find_good_cycles(std::vector<std::vector<int>> &cycles) {
             flag = 0;
         }
     }
-    sort(uniqueCycles.begin(), uniqueCycles.end(), [](std::vector<int>& a, std::vector<int>& b) -> bool {
-        return a.size() < b.size();
-        });
+    sort(uniqueCycles.begin(), uniqueCycles.end(), CompareCycles);//[](std::vector<int>& a, std::vector<int>& b) -> bool {
+        //return a.size() < b.size();
+        //});
     if (uniqueCycles.size() > 0) {
         goodCycles.push_back(uniqueCycles[0]);
         int goodCycleIndex = 0;
@@ -250,86 +258,21 @@ void find_good_cycles(std::vector<std::vector<int>> &cycles) {
         goodEdgeIndexVec.insert(VVE[uniqueCycles[0][0]][uniqueCycles[0].back()]);
     }
 }
-
-void cut_graph(std::vector<std::vector<int>>& goodCycles, igl::opengl::glfw::Viewer& viewer ) {
+/**/
+void cut_graph(std::vector<std::vector<int>>& goodCycles, igl::opengl::glfw::Viewer& viewer) {
 
     /*
     Min cut on graph. Need to update source weights and sink weights
-    
+
     */
-    Eigen::VectorXi FS, VT, FT;
-    Eigen::VectorXd d, d_;
-    
-    Eigen::VectorXi VS,VS_;
-    VT.setLinSpaced(V.rows(), 0, V.rows() - 1);
-    int size = 0;
-    for (auto i = 1; i < goodCycles.size(); i++) {
-        size += goodCycles[i].size();
-    }
-    VS.resize(goodCycles[0].size(), 1);
-    VS_.resize(size, 1);
     typedef Graph<int, int, int> GraphType;
-    GraphType* g = new GraphType( V.rows(), EV.rows());
+    GraphType* g = new GraphType(V.rows(), EV.rows());
 
-    for (auto i=0; i < V.rows(); i++) {
+    for (auto i = 0; i < V.rows(); i++) {
         g->add_node();
     }
-    
-    for (auto j = 0; j < goodCycles[0].size(); j++) {
-        VS.row(j) << goodCycles[0][j];
-        //g->add_tweights(goodCycles[0][j], 1000, -1000);
-    }
-    for (auto i = 1; i < goodCycles.size(); i++) {
-        for (auto j = 0; j < goodCycles[i].size(); j++) {
-            VS_.row(j) << goodCycles[i][j];
-            //g->add_tweights(goodCycles[i][j], -1000, 1000);
-        }
-    }
-    igl::exact_geodesic(V, F, VS, FS, VT, FT, d);
-    igl::exact_geodesic(V, F, VS_, FS, VT, FT, d_);
-    for (auto j = 0; j < V.rows(); j++) {
-        //g->add_tweights(j, d[j]*1000,-d_[j]*1000);
-    }
-
-    for (auto j = 0; j < goodCycles[0].size(); j++) {
-        g->add_tweights(goodCycles[0][j], 1000, -1000);
-    }
-    for (auto i = 1; i < goodCycles.size(); i++) {
-        for (auto j = 0; j < goodCycles[i].size(); j++) {
-            g->add_tweights(goodCycles[i][j], -1000, 1000);
-        }
-    }
-    
     for (auto i = 0; i < EV.rows(); i++) {
-        g->add_edge(EV(i, 0), EV(i, 1), 100,100);
-    }
-    int flow = g->maxflow();
-    for (auto i = 0; i < EV.rows(); i++) {
-        if (g->what_segment(EV(i,0)) == GraphType::SOURCE && g->what_segment(EV(i, 1)) == GraphType::SINK) {
-            viewer.data().add_edges(FCV.row(EF(i, 0)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
-            viewer.data().add_edges(FCV.row(EF(i, 1)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
-            //viewer.data().add_edges(V.row(EV(i, 0)), V.row(EV(i, 1)), green);
-        }
-        else if (g->what_segment(EV(i, 0)) == GraphType::SINK && g->what_segment(EV(i, 1)) == GraphType::SOURCE) {
-            viewer.data().add_edges(FCV.row(EF(i, 0)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
-            viewer.data().add_edges(FCV.row(EF(i, 1)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
-            //viewer.data().add_edges(V.row(EV(i, 0)), V.row(EV(i, 1)), green);
-        }
-    }
-    delete g;
-}
-
-
-/*
-void cut_graph(std::vector<std::vector<int>>& goodCycles, igl::opengl::glfw::Viewer& viewer) {
-    typedef Graph<int, int, int> GraphType;
-    GraphType* g = new GraphType(FCV.rows(), EV.rows());
-
-    for (auto i = 0; i < FCV.rows(); i++) {
-        g->add_node();
-    }
-    for (auto i = 0; i < EF.rows(); i++) {
-        g->add_edge(EF(i, 0), EF(i, 1), 10, 10);
+        g->add_edge(EV(i, 0), EV(i, 1), 10, 10);
     }
     for (auto j = 0; j < goodCycles[0].size(); j++) {
         g->add_tweights(goodCycles[0][j], 1000, -1000);
@@ -342,134 +285,177 @@ void cut_graph(std::vector<std::vector<int>>& goodCycles, igl::opengl::glfw::Vie
     int flow = g->maxflow();
     for (auto i = 0; i < EV.rows(); i++) {
         if (g->what_segment(EV(i, 0)) == GraphType::SOURCE && g->what_segment(EV(i, 1)) == GraphType::SINK) {
-            viewer.data().add_edges(V.row(EV(i, 0)), V.row(EV(i, 1)), red);
+            viewer.data().add_edges(FCV.row(EF(i, 0)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
+            viewer.data().add_edges(FCV.row(EF(i, 1)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
+            //viewer.data().add_edges(V.row(EV(i, 0)), V.row(EV(i, 1)), green);
         }
         else if (g->what_segment(EV(i, 0)) == GraphType::SINK && g->what_segment(EV(i, 1)) == GraphType::SOURCE) {
-            viewer.data().add_edges(V.row(EV(i, 0)), V.row(EV(i, 1)), red);
+            viewer.data().add_edges(FCV.row(EF(i, 0)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
+            viewer.data().add_edges(FCV.row(EF(i, 1)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
+            //viewer.data().add_edges(V.row(EV(i, 0)), V.row(EV(i, 1)), green);
         }
     }
-
     delete g;
-
 }
-*/
-int main(int argc, char *argv[])
+
+int main(int argc, char* argv[])
 {
-  std::string filename = "../resources/3holes.off";
-  if(argc>1)
-  {
-    filename = argv[1];
-  }
-  // Load a mesh in OFF format
-  igl::read_triangle_mesh(filename, V, F);
-  igl::edge_topology(V, F,EV,FE,EF );
-  igl::barycenter(V, F, FCV); // Face Center Vertex
+    std::string filename = "../resources/3holes.off";
+    if (argc > 1)
+    {
+        filename = argv[1];
+    }
+    // Load a mesh in OFF format
+    igl::read_triangle_mesh(filename, V, F);
+    igl::edge_topology(V, F, EV, FE, EF);
+    igl::barycenter(V, F, FCV); // Face Center Vertex
 
-  DEW.resize(EF.rows(), 2);//Face Center Vertex1 Index, Face Center Vertex2 Index
-  EVW.resize(EV.rows(), 2);
-  for (auto i = 0; i < V.rows(); i++) {
-      std::unordered_map<int, int> uom;
-      VVE.push_back(uom);
-  }
-  
-  int g = (EV.rows() - V.rows() - F.rows() + 2)/2;
-  // Compute curvature directions via quadric fitting
-  Eigen::MatrixXd PD1, PD2;
-  Eigen::VectorXd PV1, PV2;
-  igl::principal_curvature(V, F, PD1, PD2, PV1, PV2);
+    DEW.resize(EF.rows(), 2);//Face Center Vertex1 Index, Face Center Vertex2 Index
+    EVW.resize(EV.rows(), 2);
+    for (auto i = 0; i < V.rows(); i++) {
+        std::unordered_map<int, int> uom;
+        VVE.push_back(uom);
+    }
 
-  igl::opengl::glfw::Viewer viewer;
-  viewer.data().set_mesh(V, F);
-  const Eigen::RowVector3d red(0.8, 0.2, 0.2), blue(0.2, 0.2, 0.8);
-  std::vector<WeightedEdge> primalEdgesMin;
-  std::vector<WeightedEdge> primalEdgesMax;
-  std::vector<WeightedEdge> dualEdgesMin;
-  std::vector<WeightedEdge> dualEdgesMax;
+    int g = (EV.rows() - V.rows() - F.rows() + 2) / 2;
+    // Compute curvature directions via quadric fitting
+    Eigen::MatrixXd PD1, PD2;
+    Eigen::VectorXd PV1, PV2;
+    igl::principal_curvature(V, F, PD1, PD2, PV1, PV2);
 
-  /*
-  std::vector<WeightedEdge> primalSpanMin;
-  std::vector<WeightedEdge> primalSpanMax;
-  std::vector<WeightedEdge> dualSpanMin;
-  std::vector<WeightedEdge> dualSpanMax;
-  */
-  std::unordered_set<int> uos;
-  for (auto i = 0; i < EV.rows(); i++) {
-      Eigen::VectorXd edgeD = V.row(EV(i, 1)) - V.row(EV(i, 0));
-      edgeD.normalize();
-      EVW.row(i) << abs(edgeD.dot(PD1.row(EV(i, 0)))) / 2 + abs(edgeD.dot(PD1.row(EV(i, 1)))) / 2,
-          abs(edgeD.dot(PD2.row(EV(i, 0)))) / 2 + abs(edgeD.dot(PD2.row(EV(i, 1)))) / 2;
-      primalEdgesMin.push_back(WeightedEdge(i, EV(i, 0), EV(i, 1), EVW(i, 0)));
-      primalEdgesMax.push_back(WeightedEdge(i, EV(i, 0), EV(i, 1), EVW(i, 1)));
-      VVE[EV(i, 0)][ EV(i, 1)] = i;
-      VVE[EV(i, 1)][ EV(i, 0)] = i;
-  }
+    igl::opengl::glfw::Viewer viewer;
+    viewer.data().set_mesh(V, F);
+    const Eigen::RowVector3d red(0.8, 0.2, 0.2), blue(0.2, 0.2, 0.8);
+    std::vector<WeightedEdge> primalEdgesMin;
+    std::vector<WeightedEdge> primalEdgesMax;
+    std::vector<WeightedEdge> dualEdgesMin;
+    std::vector<WeightedEdge> dualEdgesMax;
 
-  for (auto i = 0; i < EF.rows(); i++) {
-      //DEV.row(i) << FCV.row(EF(i, 0)), FCV.row(EF(i, 1));// , (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2;
-      Eigen::VectorXd edgeD = (FCV.row(EF(i, 1)) - FCV.row(EF(i, 0))) / 2;
-      Eigen::VectorXd avgMinC = (PD1.row(F(EV(i, 0), 0)) + PD1.row(F(EV(i, 0), 1)) + PD1.row(F(EV(i, 0), 2)) +
+    /*
+    std::vector<WeightedEdge> primalSpanMin;
+    std::vector<WeightedEdge> primalSpanMax;
+    std::vector<WeightedEdge> dualSpanMin;
+    std::vector<WeightedEdge> dualSpanMax;
+    */
+    std::unordered_set<int> uos;
+    for (auto i = 0; i < EV.rows(); i++) {
+        Eigen::VectorXd edgeD = V.row(EV(i, 1)) - V.row(EV(i, 0));
+        edgeD.normalize();
+        EVW.row(i) << abs(edgeD.dot(PD1.row(EV(i, 0)))) / 2 + abs(edgeD.dot(PD1.row(EV(i, 1)))) / 2,
+            abs(edgeD.dot(PD2.row(EV(i, 0)))) / 2 + abs(edgeD.dot(PD2.row(EV(i, 1)))) / 2;
+        primalEdgesMin.push_back(WeightedEdge(i, EV(i, 0), EV(i, 1), EVW(i, 0)));
+        primalEdgesMax.push_back(WeightedEdge(i, EV(i, 0), EV(i, 1), EVW(i, 1)));
+        VVE[EV(i, 0)][EV(i, 1)] = i;
+        VVE[EV(i, 1)][EV(i, 0)] = i;
+    }
+
+    for (auto i = 0; i < EF.rows(); i++) {
+        //DEV.row(i) << FCV.row(EF(i, 0)), FCV.row(EF(i, 1));// , (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2;
+        Eigen::VectorXd edgeD = (FCV.row(EF(i, 1)) - FCV.row(EF(i, 0))) / 2;
+        Eigen::VectorXd avgMinC = (PD1.row(F(EV(i, 0), 0)) + PD1.row(F(EV(i, 0), 1)) + PD1.row(F(EV(i, 0), 2)) +
             PD1.row(F(EV(i, 1), 0)) + PD1.row(F(EV(i, 1), 1)) + PD1.row(F(EV(i, 1), 2))) / 3;
-      Eigen::VectorXd avgMaxC = (PD2.row(F(EV(i, 0), 0)) + PD2.row(F(EV(i, 0), 1)) + PD2.row(F(EV(i, 0), 2)) +
+        Eigen::VectorXd avgMaxC = (PD2.row(F(EV(i, 0), 0)) + PD2.row(F(EV(i, 0), 1)) + PD2.row(F(EV(i, 0), 2)) +
             PD2.row(F(EV(i, 1), 0)) + PD2.row(F(EV(i, 1), 1)) + PD2.row(F(EV(i, 1), 2))) / 3;
         edgeD.normalize();
         avgMinC.normalize();
         avgMaxC.normalize();
 
-       // DEW.row(i) << abs(edgeD.dot(PD1.row(F(EF(i, 0), 0)))) / 3 + abs(edgeD.dot(PD1.row(F(EF(i, 0), 1)))) / 3 + abs(edgeD.dot(PD1.row(F(EF(i, 0), 2)))) / 3,
-            //abs(edgeD.dot(PD2.row(F(EF(i, 1), 0)))) / 3 + abs(edgeD.dot(PD2.row(F(EF(i, 1), 1)))) / 3 + abs(edgeD.dot(PD2.row(F(EF(i, 1), 2)))) / 3;
+        // DEW.row(i) << abs(edgeD.dot(PD1.row(F(EF(i, 0), 0)))) / 3 + abs(edgeD.dot(PD1.row(F(EF(i, 0), 1)))) / 3 + abs(edgeD.dot(PD1.row(F(EF(i, 0), 2)))) / 3,
+             //abs(edgeD.dot(PD2.row(F(EF(i, 1), 0)))) / 3 + abs(edgeD.dot(PD2.row(F(EF(i, 1), 1)))) / 3 + abs(edgeD.dot(PD2.row(F(EF(i, 1), 2)))) / 3;
 
-        //DEW.row(i) << abs(edgeD.dot(avgMinC)), abs(edgeD.dot(avgMaxC));
-        //dualEdgesMin.push_back(WeightedEdge(i, EF(i, 0), EF(i, 1), DEW(i, 0)));
-        //dualEdgesMax.push_back(WeightedEdge(i, EF(i, 0), EF(i, 1), DEW(i, 1)));
+         //DEW.row(i) << abs(edgeD.dot(avgMinC)), abs(edgeD.dot(avgMaxC));
+         //dualEdgesMin.push_back(WeightedEdge(i, EF(i, 0), EF(i, 1), DEW(i, 0)));
+         //dualEdgesMax.push_back(WeightedEdge(i, EF(i, 0), EF(i, 1), DEW(i, 1)));
         dualEdgesMin.push_back(WeightedEdge(i, EF(i, 0), EF(i, 1), EVW(i, 0)));
         dualEdgesMax.push_back(WeightedEdge(i, EF(i, 0), EF(i, 1), EVW(i, 1)));
 
-      //viewer.data().add_edges(FCV.row(EF(i, 0)), (V.row(EV(i, 0))+V.row(EV(i,1)))/2, red);
-      //viewer.data().add_edges(FCV.row(EF(i, 1)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
-  }
-
-  
-  int ngc = 0;
-  int MAX = 2;// 5 * g;
-  int iter = 0;
-  bool flag = 0;
-  while (goodCycles.size() < 2 * g && iter < MAX) {
-      std::vector<std::vector<int>> cycles;
-      if (iter % 2 == 0) {
-          tree_cotree(primalEdgesMin, dualEdgesMin, cycles,viewer);
-          find_good_cycles(cycles);
-          visualize_cycles(viewer, cycles, blue);
-      }
-      else {
-          tree_cotree(primalEdgesMax, dualEdgesMax, cycles,viewer);
-          find_good_cycles(cycles);
-          //visualize_cycles(viewer, cycles, red);
-      }
-      ++iter;
-
-  }
-  cut_graph(goodCycles, viewer);
+        //viewer.data().add_edges(FCV.row(EF(i, 0)), (V.row(EV(i, 0))+V.row(EV(i,1)))/2, red);
+        //viewer.data().add_edges(FCV.row(EF(i, 1)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
+    }
 
 
-  //visualize_cycles(viewer, goodCycles, green);
+    int ngc = 0;
+    int MAX = 2;// 5 * g;
+    int iter = 0;
+    bool flag = 0;
+    while (goodCycles.size() < 2 * g && iter < MAX) {
+        std::vector<std::vector<int>> cycles;
+        if (iter % 2 == 0) {
+            tree_cotree(primalEdgesMin, dualEdgesMin, cycles, viewer);
+            find_good_cycles(cycles);
+            visualize_cycles(viewer, cycles, blue);
+        }
+        else {
+            tree_cotree(primalEdgesMax, dualEdgesMax, cycles, viewer);
+            find_good_cycles(cycles);
+            visualize_cycles(viewer, cycles, red);
 
-  // Alternative discrete mean curvature
-  Eigen::MatrixXd HN;
-  Eigen::SparseMatrix<double> L,M,Minv;
-  igl::cotmatrix(V,F,L);
-  igl::massmatrix(V,F,igl::MASSMATRIX_TYPE_VORONOI,M);
-  igl::invert_diag(M,Minv);
-  // Laplace-Beltrami of position
-  HN = -Minv*(L*V);
-  // Extract magnitude as mean curvature
-  Eigen::VectorXd H = HN.rowwise().norm();
-  // mean curvature
-  H = 0.5*(PV1+PV2);
+        }
+        ++iter;
 
-  //viewer.data().set_data(H);
-  // Hide wireframe
-  
-  viewer.data().show_lines = false;
+    }
+    //cut_graph(goodCycles, viewer);
 
-  viewer.launch();
+
+    //visualize_cycles(viewer, goodCycles, green);
+
+    // Alternative discrete mean curvature
+    Eigen::MatrixXd HN;
+    Eigen::SparseMatrix<double> L, M, Minv;
+    igl::cotmatrix(V, F, L);
+    igl::massmatrix(V, F, igl::MASSMATRIX_TYPE_VORONOI, M);
+    igl::invert_diag(M, Minv);
+    // Laplace-Beltrami of position
+    HN = -Minv * (L * V);
+    // Extract magnitude as mean curvature
+    Eigen::VectorXd H = HN.rowwise().norm();
+    // mean curvature
+    H = 0.5 * (PV1 + PV2);
+
+    //viewer.data().set_data(H);
+    // Hide wireframe
+
+    viewer.data().show_lines = false;
+    viewer.launch();
+}
+
+float DistToCentroid(std::vector<int>& cycle)
+{
+
+    Eigen::MatrixXd cycleV(cycle.size(), 3);
+    Eigen::MatrixXi cycleF(1, cycle.size());
+    Eigen::MatrixXd BC;
+
+    for (unsigned int i = 0; i < cycle.size(); ++i)
+    {
+        cycleV.row(i) = V.row(cycle[i]);
+        cycleF(0, i) = i;
+    }
+    igl::barycenter(cycleV, cycleF, BC);
+
+    float totalDistance = 0.0f;
+
+    for (unsigned int i = 0; i < cycleV.rows(); ++i)
+    {
+        totalDistance += (cycleV.row(i) - BC.row(0)).norm();
+    }
+
+    return 0.04 * totalDistance;
+}
+
+bool CompareCycles(std::vector<int>& a, std::vector<int>& b)
+
+
+{
+    float pathCostA = 0.0f;
+    float pathCostB = 0.0f;
+
+    pathCostA += a.size();
+    pathCostB += b.size();
+
+    pathCostA += DistToCentroid(a);
+    pathCostB += DistToCentroid(b);
+
+    return pathCostA < pathCostB;
+
 }
