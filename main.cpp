@@ -884,7 +884,7 @@ bool check_valid_edge(int edge, std::unordered_set<int>& main_cycle_set) {
     }
     return false;
 }
-void one_ring_tight_scheduler(std::vector<int>& cycle, std::vector<int>& newCycle, igl::opengl::glfw::Viewer& viewer) {
+void one_ring_tight_scheduler(std::vector<int>& cycle, std::vector<int>& newCycle) {
     std::unordered_set<int> node_set;
     std::unordered_set<int> bridge_edges;
     std::unordered_set<int> cycle_edges;
@@ -966,6 +966,13 @@ void one_ring_tight_scheduler(std::vector<int>& cycle, std::vector<int>& newCycl
     }
 
     get_start_strip(cycle, cycle1, cycle2, cycle_edges, node_set, start_strip, viewer);
+    node_set.clear();
+    for (auto node : cycle1) {
+        node_set.insert(node);
+    }
+    for (auto node : cycle2) {
+        node_set.insert(node);
+    }
     if (DEBUG) {
         return;
     }
@@ -1219,30 +1226,30 @@ void one_ring_tight_scheduler(std::vector<int>& cycle, std::vector<int>& newCycl
     */
 }
 
-void tighten_cycle(std::vector<int>& cycle, std::vector<int>& newCycle, igl::opengl::glfw::Viewer& viewer) {
+void tighten_cycle(std::vector<int>& cycle) {
     int count = 0;
-    edge_tight_cycle(cycle);
-    //one_ring_tight_scheduler(cycle, newCycle, viewer);
-    /*
-    while (count<5 && get_cycle_diff(cycle, newCycle) != 0) {
-        DEBUG = 0;
-        count++;
-        one_ring_tight_scheduler(cycle, newCycle, viewer);
-
-        edge_tight_cycle(newCycle);
-
-        if (DEBUG) {
-            visualize_cycle(viewer, newCycle, red);
-        }
-        if (DEBUG) {
-            visualize_cycle(viewer, cycle, blue);
-        }
-        if (DEBUG)
-            return;
-        cycle = newCycle;
-        newCycle.clear();
+    if (DEBUG) {
+        visualize_cycle(viewer, cycle, blue);
     }
-    */
+    edge_tight_cycle(cycle);
+    std::vector<int> newCycle;
+    if (DEBUG) {
+        visualize_cycle(viewer, cycle, red);
+        return;
+    }
+    while (count < 50) {
+        newCycle.clear();
+        one_ring_tight_scheduler(cycle, newCycle);
+        if (DEBUG) {
+            return;
+        }
+        if (get_cycle_diff(cycle, newCycle) == 0) {
+            break;
+        }
+        edge_tight_cycle(newCycle);
+        cycle = newCycle;
+        count++;
+    }
 }
 
 /*
@@ -1252,7 +1259,10 @@ void find_good_cycles(std::vector<std::vector<int>>& cycles, igl::opengl::glfw::
     //Find a good cycle and store it in goodCycles
     std::vector<std::vector<int>> uniqueCycles;
     for (auto cycle : cycles) {
-        edge_tight_cycle(cycle);
+        
+        if (DEBUG) {
+            return;
+        }
         int count = 0;
         if (goodEdgeIndexVec.count(VVE[cycle[0]][cycle.back()]) > 0) {
             count = 1;
@@ -1276,22 +1286,7 @@ void find_good_cycles(std::vector<std::vector<int>>& cycles, igl::opengl::glfw::
     }
 
     if (uniqueCycles.size() > 0) {
-        std::vector<int> newCycle;
-        int count = 0;
-        while (count < 50) {
-            newCycle.clear();
-            one_ring_tight_scheduler(uniqueCycles[0], newCycle, viewer);
-            if (DEBUG) {
-                return;
-            }
-            if (get_cycle_diff(uniqueCycles[0], newCycle) == 0) {
-                break;
-            }
-            edge_tight_cycle(newCycle);
-            uniqueCycles[0] = newCycle;
-            count++;
-
-        }
+        tighten_cycle(uniqueCycles[0]);
         goodCycles.push_back(uniqueCycles[0]);
         //Add edge index of the good cycle to goodEdgeIndexVec
         for (auto j = 1; j < uniqueCycles[0].size(); j++) {
@@ -1414,7 +1409,7 @@ int main(int argc, char* argv[])
                 break;
             }
             find_good_cycles(cycles, viewer);
-            visualize_cycle(viewer, goodCycles.back(), blue);
+            //visualize_cycle(viewer, goodCycles.back(), blue);
         }
         else {
             tree_cotree(primalEdgesMax, dualEdgesMax, cycles, viewer);
@@ -1423,8 +1418,7 @@ int main(int argc, char* argv[])
                 break;
             }
             find_good_cycles(cycles, viewer);
-            visualize_cycle(viewer, goodCycles.back(), red);
-            //visualize_cycles(viewer, cycles, red);
+            //visualize_cycle(viewer, goodCycles.back(), red);
         }
         ++iter;
         if (DEBUG)
