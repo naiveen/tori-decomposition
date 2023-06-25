@@ -11,7 +11,9 @@
 #include <igl/read_triangle_mesh.h>
 #include <igl/opengl/glfw/Viewer.h>
 #include <igl/edge_topology.h>
+#include <igl/heat_geodesics.h>
 #include <igl/barycenter.h>
+#include <igl/cut_mesh.h>
 #include <igl/adjacency_matrix.h>
 #include <fstream>
 #include <vector>
@@ -20,17 +22,20 @@
 #include <unordered_map>
 #include "graph.h"
 #include <stack>
+#include <math.h>
 
-bool DEBUG = 0;
+#define  DEBUG 0
+#define  primalSpanViewFlag 0
+#define  dualSpanViewFlag 0
+#define  FERTILITY 0
+#define  VISUALIZEHANDLES 1
+#define  CUTMESH 1
+
 igl::opengl::glfw::Viewer viewer;
-/*
-Eigen::MatrixXi TT;
-Eigen::MatrixXi TTi;
-Eigen::MatrixXi E;
-Eigen::MatrixXi uE;
-Eigen::MatrixXi EMAP;
-std::vector<std::vector<int>> uE2E;
-*/
+igl::HeatGeodesicsData<double> data;
+Eigen::MatrixXd PD1, PD2;
+Eigen::VectorXd PV1, PV2;
+
 Eigen::MatrixXd V;
 Eigen::MatrixXi F;
 Eigen::SparseMatrix<double> VF;
@@ -46,6 +51,7 @@ std::vector<std::vector<int>> tunnelCycles;
 std::unordered_set<int> goodEdgeIndexVec;
 std::unordered_set<int> badEdgeIndexVec;
 std::vector<std::unordered_map<int, int>> VVE;
+std::vector<std::unordered_map<int, int>> dVVE;
 
 const Eigen::RowVector3d red(0.8, 0.2, 0.2), blue(0.2, 0.2, 0.8), green(0.2, 0.8, 0.2), color1(0.2, 0.2, 0.2);
 
@@ -66,6 +72,9 @@ struct Edge {
     int src, dst;
     Edge(int src, int dst) : src(src), dst(dst) {};
 };
+
+
+
 class UnionFind {
 private:
     std::vector<int> root_, size_;
@@ -128,6 +137,32 @@ void kruskalMST(int n, std::vector<WeightedEdge>& edges, std::vector<WeightedEdg
         });
 }
 
+
+void visualize_cycle(igl::opengl::glfw::Viewer& viewer, std::vector<int>& cycle, Eigen::RowVector3d color) {
+    /*
+    * Visualize one cycle
+    * cycle contains a list of vertex indices that represent the cycle
+    */
+    viewer.data().add_edges(V.row(cycle[0]), V.row(cycle.back()), green);
+    viewer.data().add_edges(V.row(cycle[0]), V.row(cycle[1]), color1);
+    for (auto j = 1; j < cycle.size(); j++) {
+        viewer.data().add_edges(V.row(cycle[j - 1]), V.row(cycle[j]), color);
+    }
+}
+
+void visualize_cycles(igl::opengl::glfw::Viewer& viewer, std::vector<std::vector<int>>& cycles, Eigen::RowVector3d color) {
+    int i = 0;
+    sort(cycles.begin(), cycles.end(), [](std::vector<int>& a, std::vector<int>& b) -> bool {
+        return a.size() < b.size();
+        });
+    for (auto cycle : cycles) {
+        //i++;
+        if (i > 3)
+            continue;
+        visualize_cycle(viewer, cycle, color);
+    }
+}
+
 void dfs(std::vector<std::vector<int>>& VE, std::vector<int>& cycle, int prevIndex, int curIndex, bool& cycleflag) {
 
     if (curIndex == cycle[0]) {
@@ -145,6 +180,41 @@ void dfs(std::vector<std::vector<int>>& VE, std::vector<int>& cycle, int prevInd
     }
     return;
 }
+
+
+void bridge_dfs(int vertex,int parent, int &counter, std::unordered_set<int>& uos, std::unordered_set<int>& bridge_uos, std::vector<int>& dfs_numbers, std::vector<int>& escape_numbers) {
+    if (dfs_numbers[vertex] != -1) {
+        return;
+    }
+    int flag = 0;
+    for (auto i = 0; i < 3; i++) {
+        flag += uos.count(FE(vertex, i)) == 1;
+    }
+    if (flag==3) return;
+    dfs_numbers[vertex] = counter++;
+    escape_numbers[vertex] = dfs_numbers[vertex];
+    for (auto i = 0; i < 3; i++) {
+        if (uos.count(FE(vertex, i)) == 1) {
+            continue;
+        }
+        int next_vertex = EF(FE(vertex, i), 0)!= vertex ? EF(FE(vertex, i), 0) : EF(FE(vertex, i), 1);
+        if (dfs_numbers[next_vertex] == -1) {
+            bridge_dfs(next_vertex, vertex, counter, uos, bridge_uos, dfs_numbers, escape_numbers);
+            escape_numbers[vertex] = std::min(escape_numbers[vertex], escape_numbers[next_vertex]);
+            
+            if (escape_numbers[next_vertex] >  dfs_numbers[vertex]) {
+                bridge_uos.insert(FE(vertex, i));
+                //viewer.data().add_edges(FCV.row(vertex), (V.row(EV(FE(vertex, i), 0)) + V.row(EV(FE(vertex, i), 1))) / 2, blue);
+                //viewer.data().add_edges(FCV.row(next_vertex), (V.row(EV(FE(vertex, i), 0)) + V.row(EV(FE(vertex, i), 1))) / 2, blue);
+            }
+        }
+        else if (next_vertex != parent) {
+            escape_numbers[vertex] = std::min(escape_numbers[vertex], dfs_numbers[next_vertex]);
+        }
+    }
+}
+
+
 bool get_cycle_diff(std::vector<int>& cycle1, std::vector<int>& cycle2) {
     if (cycle1.size() != cycle2.size()) {
         return 1;
@@ -176,72 +246,138 @@ float get_cycle_metric(std::vector<int>& cycle) {
     dist_metric += get_tight_cycle_metric(cycle.front(), cycle.back());
     return dist_metric;
 }
+
+
+void remove_if_dangling_edge(int edge, std::unordered_set<int>& uos) {
+    if (uos.count(edge) == 1) {
+        return;
+    }
+    if (uos.count(FE(EF(edge, 0), 0)) + uos.count(FE(EF(edge, 0), 1)) + uos.count(FE(EF(edge, 0), 2)) == 2) {
+        uos.insert(edge);
+        if (uos.count(FE(EF(edge, 1), 0)) == 0)
+            remove_if_dangling_edge(FE(EF(edge, 1), 0), uos);
+        if (uos.count(FE(EF(edge, 1), 1)) == 0)
+            remove_if_dangling_edge(FE(EF(edge, 1), 1), uos);
+        if (uos.count(FE(EF(edge, 1), 2)) == 0)
+            remove_if_dangling_edge(FE(EF(edge, 1), 2), uos);
+    }
+    if (uos.count(FE(EF(edge, 1), 0)) + uos.count(FE(EF(edge, 1), 1)) + uos.count(FE(EF(edge, 1), 2)) == 2) {
+        uos.insert(edge);
+        if (uos.count(FE(EF(edge, 0), 0)) == 0)
+            remove_if_dangling_edge(FE(EF(edge, 0), 0), uos);
+        if (uos.count(FE(EF(edge, 0), 1)) == 0)
+            remove_if_dangling_edge(FE(EF(edge, 0), 1), uos);
+        if (uos.count(FE(EF(edge, 0), 2)) == 0)
+            remove_if_dangling_edge(FE(EF(edge, 0), 2), uos);
+    }
+}
+
+
+void create_bridge_graph(std::vector<WeightedEdge>& dualEdges, std::unordered_set<int>& uos) {
+    std::vector<std::unordered_map<int, int>> bridgeVVE;
+    for (auto edge : dualEdges) {
+        for (auto it = VVE[edge.src].begin(); it != VVE[edge.src].end(); it++) {
+            if(uos.count(it->second)==0)
+                bridgeVVE[edge.index][it->second] = 1;
+        }
+        for (auto it = VVE[edge.dst].begin(); it != VVE[edge.dst].end(); it++) {
+            if (uos.count(it->second) == 0)
+                bridgeVVE[edge.index][it->second] = 1;
+        }
+    }
+}
+
+
+
+
 void tree_cotree(std::vector<WeightedEdge>& primalEdges, std::vector<WeightedEdge>& dualEdges, std::vector<std::vector<int>>& cycles, igl::opengl::glfw::Viewer& viewer) {
     /*
     * Given Primary and Dual edges, the function computes 2*g good cycles.
     */
-
-
     std::vector<WeightedEdge>  primalSpan;
+    std::vector<WeightedEdge> dualEdges_;
     std::vector<WeightedEdge> dualSpan;
     std::vector<std::vector<int>>VE(V.rows(), std::vector<int>());
     std::unordered_set<int> uos;
+    std::unordered_set<int> bridge_uos;
 
     //Assign low weight to edges that form good cycles
     for (auto& index : goodEdgeIndexVec) {
         primalEdges[index].dist = 0;
-        dualEdges[index].dist = 0;
+        //dualEdges[index].dist = INT_MAX;
     }
     for (auto& index : badEdgeIndexVec) {
         primalEdges[index].dist = INT_MAX;
-        dualEdges[index].dist = INT_MAX;
+        uos.insert(index);
+        //dualEdges[index].dist = INT_MAX;
     }
     kruskalMST(V.rows(), primalEdges, primalSpan);
 
-    bool flag = 0;
+   
     //Add vertex to edge relation for edges in spanning tree
     for (auto edge : primalSpan) {
         uos.insert(edge.index);
         VE[edge.dst].push_back(edge.src);
         VE[edge.src].push_back(edge.dst);
-        if (flag)
+
+        if (primalSpanViewFlag) {
             viewer.data().add_edges(V.row(edge.src), V.row(edge.dst), green);
+        }
+
     }
 
     //Assign high weight to dual graph edges corresponding to primary graph edges
+    
     for (auto& index : uos) {
         dualEdges[index].dist = INT_MAX;
     }
+    //Remove Dangling edges
+    for (auto edge : dualEdges) {
+        remove_if_dangling_edge(edge.index, uos);
+    }
+
+    if (dualSpanViewFlag) {
+        for (auto edge : dualEdges) {
+            if (uos.count(edge.index) == 0) {
+                //viewer.data().add_edges(V.row(EV(edge.index, 0)), V.row(EV(edge.index, 1)), blue);
+                viewer.data().add_edges(FCV.row(edge.src), (V.row(EV(edge.index, 0)) + V.row(EV(edge.index, 1))) / 2, red);
+                viewer.data().add_edges(FCV.row(edge.dst), (V.row(EV(edge.index, 0)) + V.row(EV(edge.index, 1))) / 2, red);
+            }
+        }
+    }
+
+    //Remove Bridge edges
+    int bridge_counter = 0;
+    std::vector<int>dfs_numbers(FCV.rows(),-1);
+    std::vector<int>escape_numbers(FCV.rows(),-1);
+    for (auto i = 0; i < FCV.rows(); i++) {
+        bridge_dfs(i, i, bridge_counter, uos, bridge_uos, dfs_numbers, escape_numbers);
+    }
+
+    for (auto &edge : bridge_uos) {
+        uos.insert(edge);
+    }
+    /*
+    for (auto edge : dualEdges) {
+        if (uos.count(edge.index)==0) {
+            dualEdges_.push_back(edge);
+        }
+    }
+    */
 
     //Spanning tree computation on dual Graph
-    kruskalMST(FCV.rows(), dualEdges, dualSpan);
+    //kruskalMST(FCV.rows(), dualEdges_, dualSpan);
     //Reset dual graph edge weights back
     for (auto& index : uos) {
         dualEdges[index].dist = dualEdges[index]._dist;
     }
-
     for (auto& index : goodEdgeIndexVec) {
         primalEdges[index].dist = primalEdges[index]._dist;
         dualEdges[index].dist = dualEdges[index]._dist;
     }
-    //Add dual graph edges to indexes to set
-    for (auto edge : dualSpan) {
-        uos.insert(edge.index);
-        if (flag) {
-            //viewer.data().add_edges(V.row(EV(edge.index, 0)), V.row(EV(edge.index, 1)), red);
-            //viewer.data().add_edges(FCV.row(edge.src), (V.row(EV(edge.index, 0)) + V.row(EV(edge.index, 1))) / 2, red);
-            //viewer.data().add_edges(FCV.row(edge.dst), (V.row(EV(edge.index, 0)) + V.row(EV(edge.index, 1))) / 2, red);
-        }
-    }
-
-    //Cycle detection
-
     for (auto i = 0; i < EV.rows(); i++) {
         if (uos.count(i) == 0) {
-
             std::vector<int> cycle;
-            if (flag)
-                viewer.data().add_edges(V.row(EV(i, 0)), V.row(EV(i, 1)), red);
             cycle.push_back(EV(i, 0));
             cycle.push_back(EV(i, 1));
             bool cycleFlag = 0;
@@ -255,28 +391,6 @@ void tree_cotree(std::vector<WeightedEdge>& primalEdges, std::vector<WeightedEdg
     }
 }
 
-void visualize_cycle(igl::opengl::glfw::Viewer& viewer, std::vector<int>& cycle, Eigen::RowVector3d color) {
-
-    viewer.data().add_edges(V.row(cycle[0]), V.row(cycle.back()), green);
-    viewer.data().add_edges(V.row(cycle[0]), V.row(cycle[1]), color1);
-    for (auto j = 1; j < cycle.size(); j++) {
-        viewer.data().add_edges(V.row(cycle[j - 1]), V.row(cycle[j]), color);
-    }
-
-}
-
-void visualize_cycles(igl::opengl::glfw::Viewer& viewer, std::vector<std::vector<int>>& cycles, Eigen::RowVector3d color) {
-    int i = 0;
-    sort(cycles.begin(), cycles.end(), [](std::vector<int>& a, std::vector<int>& b) -> bool {
-        return a.size() < b.size();
-        });
-    for (auto cycle : cycles) {
-        //i++;
-        if (i > 3)
-            continue;
-        visualize_cycle(viewer, cycle, color);
-    }
-}
 
 void get_start_strip(std::vector<int>& cycle, std::vector<int>& cycle1, std::vector<int>& cycle2, std::unordered_set<int>& cycle_edges, 
     std::unordered_set<int>& node_set, std::unordered_set<int>& start_strip, igl::opengl::glfw::Viewer& viewer) {
@@ -377,272 +491,6 @@ void get_start_strip(std::vector<int>& cycle, std::vector<int>& cycle1, std::vec
 }
 
 
-/*
-void one_ring_tight(std::vector<int>& cycle, std::vector<int>& newCycle, igl::opengl::glfw::Viewer& viewer) {
-    std::unordered_set<int> start_strip;
-    get_start_strip(cycle, start_strip);
-    std::unordered_set<int> prev_nodes;
-    get_start_strip(cycle, prev_nodes);
-    for (auto it = VVE[cycle[0]].begin(); it != VVE[cycle[0]].end(); it++) {
-        if (start_strip.count(it->first) != 0) {
-            viewer.data().add_edges(V.row(cycle[0]), V.row(it->first), blue);
-        }
-    }
-    int k = 2;
-    std::unordered_set<int> curr_nodes;
-    for (auto i = 1; i < cycle.size(); i++) {
-        curr_nodes.clear();
-        curr_nodes.insert(cycle[i]);
-        for (auto it1 = VVE[cycle[i]].begin(); it1 != VVE[cycle[i]].end(); it1++) {
-            for (auto it2 = VVE[it1->first].begin(); it2 != VVE[it1->first].end(); it2++) {
-                if (prev_nodes.count(it2->first) != 0) {
-                    curr_nodes.insert(it1->first);
-                    if (i == k) {
-                        viewer.data().add_edges(V.row(it1->first), V.row(it2->first), green);
-                    }
-                    else if (i == k - 1) {
-                        viewer.data().add_edges(V.row(it1->first), V.row(it2->first), red);
-                    }
-                    else {
-                        viewer.data().add_edges(V.row(it1->first), V.row(it2->first), blue);
-                    }
-                }
-            }
-
-            if (i == k ) {
-                viewer.data().add_edges(V.row(it1->first), V.row(cycle[i]), green);
-            }
-            else if (i == k - 1) {
-                viewer.data().add_edges(V.row(it1->first), V.row(cycle[i]), red);
-            }
-            else {
-                viewer.data().add_edges(V.row(it1->first), V.row(cycle[i]), blue);
-            }
-        }
-        prev_nodes.clear();
-        for (auto it = curr_nodes.begin(); it != curr_nodes.end(); it++) {
-            prev_nodes.insert(*it);
-        }
-        if (i == k)
-            return;
-
-    }
-
-    return;
-
-    float best_cycle_metric = INT_MAX;
-    float temp_metric;
-    for (auto root_node : start_strip) {
-        std::vector<int> tempCycle;
-        //temp_metric = dijkstra_cycle(root_node, cycle, tempCycle);
-        if (best_cycle_metric > temp_metric) {
-            best_cycle_metric = temp_metric;
-            newCycle = tempCycle;
-        }
-    }
-}
-*/
-
-/*
-void one_ring_tight(std::vector<int>& cycle, std::vector<int>& newCycle, igl::opengl::glfw::Viewer& viewer) {
-    std::unordered_set<int> start_strip;
-    std::unordered_set<int> end_strip;
-    std::unordered_set<int> ring;
-
-
-
-
-
-
-
-    start_strip.erase(cycle.back());
-    for (auto it = VVE[cycle[1]].begin(); it != VVE[cycle[1]].end(); it++) {
-        ring.insert(it->first);
-    }
-    ring.insert(cycle[1]);
-    ring.erase(cycle[0]);
-    std::vector<int> temp;
-    for (auto it1 = start_strip.begin(); it1 != start_strip.end(); it1++) {
-        int currVertex = *it1;
-        int flag = 0;
-        for (auto it2 = ring.begin(); it2 != ring.end(); it2++) {
-            if (VVE[currVertex].count(*it2) != 0) {
-                flag = 1;
-                break;
-            }
-        }
-        if (!flag) {
-            temp.push_back(currVertex);
-        }
-    }
-    for (auto each : temp) {
-        start_strip.erase(each);
-    }
-
-
-    for (auto it = VVE[cycle.back()].begin(); it != VVE[cycle.back()].end(); it++) {
-        end_strip.insert(it->first);
-    }
-    end_strip.insert(cycle.back());
-    end_strip.erase(cycle[0]);
-    end_strip.erase(cycle[cycle.size() - 2]);
-    ring.clear();
-    for (auto it = VVE[cycle[0]].begin(); it != VVE[cycle[0]].end(); it++) {
-        ring.insert(it->first);
-    }
-    ring.insert(cycle[0]);
-    ring.erase(cycle.back());
-    std::vector<int> temp2;
-    for (auto it1 = end_strip.begin(); it1 != end_strip.end(); it1++) {
-        int currVertex = *it1;
-        int flag = 0;
-        for (auto it2 = ring.begin(); it2 != ring.end(); it2++) {
-            if (VVE[currVertex].count(*it2) != 0) {
-                flag = 1;
-                break;
-            }
-        }
-        if (!flag) {
-            temp2.push_back(currVertex);
-        }
-    }
-    for (auto each : temp2) {
-        end_strip.erase(each);
-    }
-    for (auto it = end_strip.begin(); it != end_strip.end(); it++) {
-        viewer.data().add_edges(V.row(cycle.back()), V.row(*it), red);
-    }
-
-
-
-    std::unordered_map<int, std::pair<int, float>> m;
-
-    for (auto it = start_strip.begin(); it != start_strip.end(); it++) {
-        m[*it].first = *it;
-        m[*it].second = 0;
-    }
-    int k = 1;
-    for (auto i = 1; i < cycle.size(); i++) {
-        //viewer.data().add_edges(V.row(cycle[i-1]), V.row(cycle[i]), green);
-        if (m.count(cycle[i]) == 0) {
-            m[cycle[i]].first = cycle[i - 1];
-            m[cycle[i]].second = m[cycle[i - 1]].second + get_tight_cycle_metric(cycle[i - 1], cycle[i]);
-        }
-
-        for (auto it1 = VVE[cycle[i]].begin(); it1 != VVE[cycle[i]].end(); it1++) {
-            int currVertex = it1->first;
-            if (m.count(currVertex) == 0) {
-                m[currVertex].first = cycle[i];
-                m[currVertex].second = m[cycle[i]].second + get_tight_cycle_metric(cycle[i], currVertex);
-            }
-            for (auto it2 = VVE[currVertex].begin(); it2 != VVE[currVertex].end(); it2++) {
-                if (i != 1 && start_strip.count(it2->first) != 0) {
-                    continue;
-                }
-                if (it2->first != cycle[i] && m.count(it2->first) != 0 &&
-                    get_tight_cycle_metric(currVertex, it2->first) + m[it2->first].second < m[currVertex].second) {
-                    m[currVertex].second = get_tight_cycle_metric(currVertex, it2->first) + m[it2->first].second;
-                    m[currVertex].first = it2->first;
-                    if (m[cycle[i]].second > get_tight_cycle_metric(cycle[i], currVertex) + m[currVertex].second) {
-                        m[cycle[i]].first = currVertex;
-                        m[cycle[i]].second = get_tight_cycle_metric(cycle[i], currVertex) + m[currVertex].second;
-                    }
-                }
-            }
-        }
-        for (auto it1 = VVE[cycle[i]].begin(); it1 != VVE[cycle[i]].end(); it1++) {
-            int currVertex = it1->first;
-            if (get_tight_cycle_metric(currVertex, cycle[i]) + m[cycle[i]].second < m[currVertex].second) {
-                m[currVertex].second = get_tight_cycle_metric(currVertex, cycle[i]) + m[cycle[i]].second;
-                m[currVertex].first = cycle[i];
-            }
-
-            if (m[currVertex].second == 0) {
-                std::cout << currVertex << " "<<m[currVertex].first << std::endl;
-                viewer.data().add_edges(V.row(currVertex), V.row(m[currVertex].first), red);
-            }
-            if (i == k) {
-                //viewer.data().add_edges(V.row(currVertex), V.row(m[currVertex].first), red);
-            }
-            else {
-                //viewer.data().add_edges(V.row(currVertex), V.row(m[currVertex].first), blue);
-            }
-        }
-    }
-    /*
-    int i = cycle.size() - 1;
-    if (m.count(cycle[i]) == 0) {
-        m[cycle[i]].first = cycle[i - 1];
-        m[cycle[i]].second = m[cycle[i - 1]].second + get_tight_cycle_metric(cycle[i - 1], cycle[i]);
-    }
-    for (auto it1 = VVE[cycle[i]].begin(); it1 != VVE[cycle[i]].end(); it1++) {
-        int currVertex = it1->first;
-        if (start_strip.count(currVertex) != 0)
-            continue;
-        if (m.count(it1->first) == 0) {
-            m[currVertex].first = cycle[i];
-            m[currVertex].second = get_tight_cycle_metric(cycle[i], currVertex) + m[cycle[i]].second;
-        }
-        for (auto it2 = VVE[currVertex].begin(); it2 != VVE[currVertex].end(); it2++) {
-            if (it2->first != cycle[i] && m.count(it2->first) != 0 &&
-                get_tight_cycle_metric(currVertex, it2->first) + m[it2->first].second < m[currVertex].second) {
-                m[currVertex].second = get_tight_cycle_metric(currVertex, it2->first) + m[it2->first].second;
-                m[currVertex].first = it2->first;
-                if (m[cycle[i]].second > get_tight_cycle_metric(cycle[i], currVertex) + m[currVertex].second) {
-                    m[cycle[i]].first = currVertex;
-                    m[cycle[i]].second = get_tight_cycle_metric(cycle[i], currVertex) + m[currVertex].second;
-                }
-            }
-        }
-    }
-    for (auto it1 = VVE[cycle[i]].begin(); it1 != VVE[cycle[i]].end(); it1++) {
-        int currVertex = it1->first;
-        if (start_strip.count(currVertex) != 0)
-            continue;
-        if (get_tight_cycle_metric(currVertex, cycle[i]) + m[cycle[i]].second < m[currVertex].second) {
-            m[currVertex].second = get_tight_cycle_metric(currVertex, cycle[i]) + m[cycle[i]].second;
-            m[currVertex].first = cycle[i];
-        }
-    }
-
-    int bestCyclePos = cycle.back();
-    float best_cycle_metric = m[cycle.back()].second;
-    for (auto it = VVE[cycle.back()].begin(); it != VVE[cycle.back()].end(); it++) {
-        if (best_cycle_metric < m[it->first].second) {
-            bestCyclePos = it->first;
-            best_cycle_metric = m[it->first].second;
-        }
-    }
-
-    int nextPos = m[bestCyclePos].first;
-    newCycle.push_back(bestCyclePos);
-    while (m[nextPos].second != 0) {
-        newCycle.push_back(nextPos);
-        nextPos = m[nextPos].first;
-    }
-    newCycle.push_back(nextPos);
-
-
-
-    if (VVE[nextPos].count(bestCyclePos) == 0) {
-        float mtemp = INT_MAX;
-        int finalPos = 0;
-        for (auto it = start_strip.begin(); it != start_strip.end(); it++) {
-            if (VVE[nextPos].count(*it) && VVE[bestCyclePos].count(*it)) {
-                float temp = get_tight_cycle_metric(nextPos, *it) + get_tight_cycle_metric(bestCyclePos, *it);
-                if (temp < mtemp) {
-                    mtemp = temp;
-                    finalPos = *it;
-                }
-            }
-        }
-        newCycle.push_back(finalPos);
-    }
-
-
-}
-*/
-
 void remove_loops(std::list<int>& fl) {
     std::unordered_set<int> uos;
     std::stack<int> s;
@@ -679,6 +527,7 @@ void edge_tight_cycle(std::vector<int>& cycle) {
     it3++;
     bool flag = 1;
     bool check = 1;
+
     while (flag) {
         if (VVE[*it1].count(*it3)) {
             fl.remove(*it2);
@@ -714,10 +563,8 @@ void edge_tight_cycle(std::vector<int>& cycle) {
             }
             //remove_loops(fl);
             it1 = fl.begin();
-            //it2 = it1;
-            //it2++;
-            //it3 = it2;
-            //it3++;
+            
+            /*
             if (DEBUG) {
                 visualize_cycle(viewer, cycle, blue);
                 cycle.clear();
@@ -727,8 +574,8 @@ void edge_tight_cycle(std::vector<int>& cycle) {
                 visualize_cycle(viewer, cycle, red);
                 flag = 0;
                 DEBUG = 0;
-
             }
+            */
         }
     }
     cycle.clear();
@@ -1072,158 +919,6 @@ void one_ring_tight_scheduler(std::vector<int>& cycle, std::vector<int>& newCycl
         visualize_cycle(viewer, cycle2, red);
         return;
     }
-
-    /*
-    while (1) {
-        if (DEBUG) {
-            DEBUG = 0;
-            break;
-        }
-        if (cycle1.size() == 500)
-            break;
-        for (auto it = VVE[cycle1.back()].begin(); it != VVE[cycle1.back()].end(); it++) {
-            if (main_cycle_set.count(it->first)==0&& node_set.count(it->first) != 0 && it->first != cycle1[cycle1.size() - 2]) {
-                cycle1.push_back(it->first);
-                break;
-            }
-        }
-        if (VVE[cycle1[0]].count(cycle1.back()) != 0)
-            break;
-    }
-
-    while (1) {
-        if (cycle2.size() == 500)
-            break;
-        for (auto it = VVE[cycle2.back()].begin(); it != VVE[cycle2.back()].end(); it++) {
-            if (main_cycle_set.count(it->first) == 0 && node_set.count(it->first) != 0 && it->first != cycle2[cycle2.size() - 2]) {
-                cycle2.push_back(it->first);
-                break;
-            }
-        }
-        if (VVE[cycle2[0]].count(cycle2.back()) != 0)
-            break;
-    }
-    */
-
-    /*
-    for (auto it = start_strip.begin(); it != start_strip.end(); it++) {
-        dist_map[*it].first = cycle[0];
-        dist_map[*it].second = get_tight_cycle_metric(cycle[0], *it);
-        if (DEBUG)
-            viewer.data().add_edges(V.row(*it), V.row(cycle[0]), blue);
-    }
-    DEBUG = 0;
-    if (DEBUG) {
-        int k = 4;
-        for (auto i = 1; i < cycle.size(); i++) {
-            if (i == k)
-                break;
-            viewer.data().add_edges(V.row(cycle[i - 1]), V.row(cycle[i]), blue);
-        }
-        for (auto i = 1; i < cycle.size(); i++) {
-            if (i == k)
-                break;
-            for (auto it1 = VVE[cycle[i]].begin(); it1 != VVE[cycle[i]].end(); it1++) {
-                viewer.data().add_edges(V.row(it1->first), V.row(cycle[i]), green);
-            }
-        }
-        for (auto i = 1; i < cycle.size(); i++) {
-            if (i == k)
-                break;
-            for (auto it1 = VVE[cycle[i]].begin(); it1 != VVE[cycle[i]].end(); it1++) {
-                for (auto it2 = VVE[it1->first].begin(); it2 != VVE[it1->first].end(); it2++) {
-                    if (cycle_edges.count(it2->second) == 0)
-                        continue;
-                    if (i != 1 && start_strip.count(it2->first) != 0) {
-                        continue;
-                    }
-                    if (it2->first != cycle[i] && dist_map.count(it2->first) != 0) {
-                        viewer.data().add_edges(V.row(it1->first), V.row(cycle[i]), red);
-                    }
-                }
-            }
-        }
-    }
-
-    for (auto i = 1; i < cycle.size(); i++) {
-        //viewer.data().add_edges(V.row(cycle[i-1]), V.row(cycle[i]), green);
-        if (dist_map.count(cycle[i]) == 0) {
-            dist_map[cycle[i]].first = cycle[i - 1];
-            dist_map[cycle[i]].second = dist_map[cycle[i - 1]].second + get_tight_cycle_metric(cycle[i - 1], cycle[i]);
-        }
-
-        for (auto it1 = VVE[cycle[i]].begin(); it1 != VVE[cycle[i]].end(); it1++) {
-            int currVertex = it1->first;
-            if (dist_map.count(currVertex) == 0) {
-                dist_map[currVertex].first = cycle[i];
-                dist_map[currVertex].second = dist_map[cycle[i]].second + get_tight_cycle_metric(cycle[i], currVertex);
-            }
-            for (auto it2 = VVE[currVertex].begin(); it2 != VVE[currVertex].end(); it2++) {
-                if (cycle_edges.count(it2->second) == 0)
-                    continue;
-                if (i != 1 && start_strip.count(it2->first) != 0) {
-                    continue;
-                }
-                if (it2->first != cycle[i] && dist_map.count(it2->first) != 0 &&
-                    get_tight_cycle_metric(currVertex, it2->first) + dist_map[it2->first].second < dist_map[currVertex].second) {
-                    dist_map[currVertex].second = get_tight_cycle_metric(currVertex, it2->first) + dist_map[it2->first].second;
-                    dist_map[currVertex].first = it2->first;
-                    if (dist_map[cycle[i]].second > get_tight_cycle_metric(cycle[i], currVertex) + dist_map[currVertex].second) {
-                        dist_map[cycle[i]].first = currVertex;
-                        dist_map[cycle[i]].second = get_tight_cycle_metric(cycle[i], currVertex) + dist_map[currVertex].second;
-                    }
-                }
-            }
-        }
-        for (auto it1 = VVE[cycle[i]].begin(); it1 != VVE[cycle[i]].end(); it1++) {
-            int currVertex = it1->first;
-            if (get_tight_cycle_metric(currVertex, cycle[i]) + dist_map[cycle[i]].second < dist_map[currVertex].second) {
-                dist_map[currVertex].second = get_tight_cycle_metric(currVertex, cycle[i]) + dist_map[cycle[i]].second;
-                dist_map[currVertex].first = cycle[i];
-            }
-        }
-    }
-
-    int bestCyclePos = cycle[0];
-    float bestMetric = INT_MAX;
-    for (auto it = VVE[cycle[0]].begin(); it != VVE[cycle[0]].end(); it++) {
-        if (start_strip.count(it->first) != 0 || it->first == cycle[1] || dist_map.count(it->first) == 0)
-            continue;
-        if (bestMetric > dist_map[it->first].second + get_tight_cycle_metric(it->first, cycle[0])) {
-            bestMetric = dist_map[it->first].second + get_tight_cycle_metric(it->first, cycle[0]);
-            bestCyclePos = it->first;
-        }
-    }
-    if (bestCyclePos == cycle[0]) {
-        newCycle = cycle;
-        return;
-    }
-    int nextPos = bestCyclePos;
-    while (dist_map[nextPos].first != cycle[0]) {
-        newCycle.push_back(nextPos);
-        nextPos = dist_map[nextPos].first;
-    }
-    newCycle.push_back(nextPos);
-    newCycle.push_back(cycle[0]);
-    reverse(newCycle.begin(), newCycle.end());
-    if (DEBUG) {
-        visualize_cycle(viewer, cycle, blue);
-        visualize_cycle(viewer, newCycle, red);
-        float cycle1_metric = 0;
-        float cycle2_metric = 0;
-        for (auto i = 1; i < cycle.size(); i++) {
-            cycle1_metric += get_tight_cycle_metric(cycle[i - 1], cycle[i]);
-
-        }
-        cycle1_metric += get_tight_cycle_metric(cycle[0], cycle.back());
-        for (auto i = 1; i < newCycle.size(); i++) {
-            cycle2_metric += get_tight_cycle_metric(newCycle[i - 1], newCycle[i]);
-
-        }
-        cycle2_metric += get_tight_cycle_metric(newCycle[0], newCycle.back());
-        return;
-    }
-    */
 }
 
 void tighten_cycle(std::vector<int>& cycle) {
@@ -1252,9 +947,6 @@ void tighten_cycle(std::vector<int>& cycle) {
     }
 }
 
-/*
-*
-* Sample version based on length of cycles; */
 void find_good_cycles(std::vector<std::vector<int>>& cycles, igl::opengl::glfw::Viewer& viewer) {
     //Find a good cycle and store it in goodCycles
     std::vector<std::vector<int>> uniqueCycles;
@@ -1298,53 +990,118 @@ void find_good_cycles(std::vector<std::vector<int>>& cycles, igl::opengl::glfw::
 }
 
 void get_tunnel_cycles(std::vector<std::vector<int>>& goodCycles, std::vector<std::vector<int>>& tunnelCycles) {
+    sort(goodCycles.begin(), goodCycles.end(), [](std::vector<int>& a, std::vector<int>& b) -> bool {
+        return a.size() < b.size();
+        });
+
+    for (auto i = 0; i < goodCycles.size() / 2; i++) {
+        tunnelCycles.push_back(goodCycles[i]);
+    }
+
+    if (FERTILITY) {
+        tunnelCycles.clear();
+        tunnelCycles.push_back(goodCycles[4]);
+        tunnelCycles.push_back(goodCycles[5]);
+        tunnelCycles.push_back(goodCycles[6]);
+        tunnelCycles.push_back(goodCycles[7]);
+    }
 
 }
 
-void cut_graph(std::vector<std::vector<int>>& goodCycles, igl::opengl::glfw::Viewer& viewer) {
+void cut_mesh(Eigen::MatrixXd& V, Eigen::MatrixXi& F, std::unordered_set<int>& cutEdgeSet) {
+    Eigen::MatrixXi cutF;
+    Eigen::MatrixXi FF;
+    Eigen::MatrixXi nFF;
+    FF.resize(F.rows(), 3);
+    std::unordered_set<int> newFaceSet;
 
-    /*
-    Min cut on graph. Need to update source weights and sink weights
+    std::unordered_set<int> cutVertexSet;
+    double x = 0, y = 0, z = 0;
 
-    */
-    typedef Graph<int, int, int> GraphType;
-    GraphType* g = new GraphType(V.rows(), EV.rows());
-
-    for (auto i = 0; i < V.rows(); i++) {
-        g->add_node();
+    for (auto edge : cutEdgeSet) {
+        cutVertexSet.insert(EV(edge, 0));
+        cutVertexSet.insert(EV(edge, 1));
     }
-    for (auto i = 0; i < EV.rows(); i++) {
-        g->add_edge(EV(i, 0), EV(i, 1), 10, 10);
-    }
-    for (auto j = 0; j < goodCycles[0].size(); j++) {
-        g->add_tweights(goodCycles[0][j], 1000, -1000);
-    }
-    for (auto i = 1; i < goodCycles.size(); i++) {
-        for (auto j = 0; j < goodCycles[i].size(); j++) {
-            g->add_tweights(goodCycles[i][j], -1000, 1000);
+    
+    int ffCount = 0;
+    for (auto i = 0; i < FE.rows(); i++) {
+        if (cutEdgeSet.count(FE(i, 0)) == 0 && cutEdgeSet.count(FE(i, 1)) == 0 && cutEdgeSet.count(FE(i, 2)) == 0) {
+            newFaceSet.insert(i);
+        }
+        else {
+            int edgeIndex=0;
+            if (cutEdgeSet.count(FE(i, 0)) == 0)
+                edgeIndex = FE(i, 0);
+            else if (cutEdgeSet.count(FE(i, 1)) == 0)
+                edgeIndex = FE(i, 1);
+            else if (cutEdgeSet.count(FE(i, 2)) == 0)
+                edgeIndex = FE(i, 2);
+        }
+    }  
+    nFF.resize(newFaceSet.size(), 3);
+    int nFFCount = 0;
+    for (auto i = 0; i < FE.rows(); i++) {
+        if (newFaceSet.count(i)) {
+            nFF.row(nFFCount++) << F(i, 0), F(i, 1), F(i, 2);
         }
     }
-    int flow = g->maxflow();
+
+    viewer.data().set_mesh(V, nFF);
+}
+
+void get_cut_edges(std::vector<std::vector<int>>& tunnelCycles, std::unordered_set<int> &cutEdgeSet) {
+    Eigen::VectorXd DSource,DSink;
+    int sourceCount = tunnelCycles.back().size();
+    int sinkCount = 0;
+    for (auto cycle : tunnelCycles) {
+        sinkCount += cycle.size();
+    }
+    sinkCount -= sourceCount;
+    Eigen::VectorXi gammaSource(sourceCount);
+    Eigen::VectorXi gammaSink(sinkCount);
+    sourceCount = 0;
+    sinkCount = 0;
+    for (auto node : tunnelCycles.back()) {
+        gammaSource(sourceCount++) = node;
+    }
+    for (auto i = 0; i < tunnelCycles.size()-1; i++) {
+        for (auto node : tunnelCycles[i]) {
+            gammaSink(sinkCount++) = node;
+        }
+    }
+
+    igl::heat_geodesics_solve(data, gammaSource, DSource);
+    igl::heat_geodesics_solve(data, gammaSink, DSink);
+
+    
     for (auto i = 0; i < EV.rows(); i++) {
-        if (g->what_segment(EV(i, 0)) == GraphType::SOURCE && g->what_segment(EV(i, 1)) == GraphType::SINK) {
+        if (DSource(EV(i, 0)) > DSink(EV(i, 0)) && DSink(EV(i, 1)) > DSource(EV(i, 1))) {
+            cutEdgeSet.insert(i);
+            viewer.data().add_edges(FCV.row(EF(i, 0)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
+            viewer.data().add_edges(FCV.row(EF(i, 1)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
+            //Sviewer.data().add_edges(V.row(EV(i, 0)), V.row(EV(i, 1)), green);
+        }
+        else if (DSource(EV(i, 0)) < DSink(EV(i, 0)) && DSink(EV(i, 1)) < DSource(EV(i, 1))) {
+            cutEdgeSet.insert(i);
             viewer.data().add_edges(FCV.row(EF(i, 0)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
             viewer.data().add_edges(FCV.row(EF(i, 1)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
             //viewer.data().add_edges(V.row(EV(i, 0)), V.row(EV(i, 1)), green);
         }
-        else if (g->what_segment(EV(i, 0)) == GraphType::SINK && g->what_segment(EV(i, 1)) == GraphType::SOURCE) {
-            viewer.data().add_edges(FCV.row(EF(i, 0)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
-            viewer.data().add_edges(FCV.row(EF(i, 1)), (V.row(EV(i, 0)) + V.row(EV(i, 1))) / 2, red);
-            //viewer.data().add_edges(V.row(EV(i, 0)), V.row(EV(i, 1)), green);
-        }
     }
-    delete g;
 }
+
+void launch_viewer() {
+    viewer.data().set_mesh(V, F);
+    viewer.data().show_lines = true;
+    viewer.launch();
+}
+
 
 int main(int argc, char* argv[])
 {
     std::string filename = "../resources/3holes.off";
-    int fertility = 1;
-    if (fertility) {
+    
+    if (FERTILITY) {
         filename = "../resources/fertility.off";
     }
     if (argc > 1)
@@ -1353,6 +1110,9 @@ int main(int argc, char* argv[])
     }
     // Load a mesh in OFF format
     igl::read_triangle_mesh(filename, V, F);
+    igl::heat_geodesics_precompute(V, F, data);
+    // Compute curvature directions via quadric fitting
+    igl::principal_curvature(V, F, PD1, PD2, PV1, PV2);
     igl::edge_topology(V, F, EV, FE, EF);
     igl::barycenter(V, F, FCV); // Face Center Vertex
 
@@ -1362,18 +1122,17 @@ int main(int argc, char* argv[])
         std::unordered_map<int, int> uom;
         VVE.push_back(uom);
     }
+    for (auto i = 0; i < FCV.rows(); i++) {
+        std::unordered_map<int, int> uom;
+        dVVE.push_back(uom);
+    }
 
     int g = (EV.rows() - V.rows() - F.rows() + 2) / 2; //genus
 
 
-    // Compute curvature directions via quadric fitting
-    Eigen::MatrixXd PD1, PD2;
-    Eigen::VectorXd PV1, PV2;
-    igl::principal_curvature(V, F, PD1, PD2, PV1, PV2);
 
 
-
-    viewer.data().set_mesh(V, F);
+    //viewer.data().set_mesh(V, F);
     std::vector<WeightedEdge> primalEdgesMin;
     std::vector<WeightedEdge> primalEdgesMax;
     std::vector<WeightedEdge> dualEdgesMin;
@@ -1390,9 +1149,13 @@ int main(int argc, char* argv[])
         VVE[EV(i, 0)][EV(i, 1)] = i;
         VVE[EV(i, 1)][EV(i, 0)] = i;
     }
+
+
     for (auto i = 0; i < EF.rows(); i++) {
         dualEdgesMin.push_back(WeightedEdge(i, EF(i, 0), EF(i, 1), 1 - EVW(i, 0)));
         dualEdgesMax.push_back(WeightedEdge(i, EF(i, 0), EF(i, 1), 1 - EVW(i, 1)));
+        dVVE[EF(i, 0)][EF(i, 1)] = i;
+        dVVE[EF(i, 1)][EF(i, 0)] = i;
     }
 
     int ngc = 0;
@@ -1401,43 +1164,57 @@ int main(int argc, char* argv[])
     bool flag = 0;
     while (goodCycles.size() < 2 * g && iter < MAX) {
         std::vector<std::vector<int>> cycles;
-        DEBUG = 0;
-        if (iter % 2 == 0) {
+        if (iter % 2 == 1) {
             tree_cotree(primalEdgesMin, dualEdgesMin, cycles, viewer);
+
+            find_good_cycles(cycles, viewer);
             if (DEBUG) {
-                visualize_cycles(viewer, cycles, blue);
+                visualize_cycle(viewer, goodCycles.back(), blue);
                 break;
             }
-            find_good_cycles(cycles, viewer);
-            //visualize_cycle(viewer, goodCycles.back(), blue);
         }
         else {
             tree_cotree(primalEdgesMax, dualEdgesMax, cycles, viewer);
+            if (primalSpanViewFlag || dualSpanViewFlag) {
+                launch_viewer();
+                return 0;
+            }
+            find_good_cycles(cycles, viewer);
             if (DEBUG) {
                 visualize_cycles(viewer, cycles, blue);
                 break;
             }
-            find_good_cycles(cycles, viewer);
-            //visualize_cycle(viewer, goodCycles.back(), red);
         }
         ++iter;
         if (DEBUG)
             break;
     }
-    if (!DEBUG)
-        visualize_cycles(viewer, goodCycles, blue);
-    //get_tunnel_cycles();
-    //cut_graph(goodCycles, viewer);
 
+    
+    get_tunnel_cycles(goodCycles, tunnelCycles);
+
+    visualize_cycles(viewer, tunnelCycles, blue);
+    if(VISUALIZEHANDLES)
+        visualize_cycles(viewer, goodCycles, red);
+
+    if (CUTMESH) {
+        std::unordered_set<int> cutEdgeSet;
+        reverse(tunnelCycles.begin(), tunnelCycles.end());
+        while (tunnelCycles.size() != 1) {
+            get_cut_edges(tunnelCycles, cutEdgeSet);
+            tunnelCycles.pop_back();
+            cut_mesh(V, F, cutEdgeSet);
+            break;
+        }
+    }
 
     // Draw a blue segment parallel to the minimal curvature direction
     // const double avg = igl::avg_edge_length(V, F);
     //viewer.data().add_edges(V + PD2 * avg, V - PD2 * avg, blue);
     //viewer.data().add_edges(V + PD1 * avg, V - PD1 * avg, red);
 
-
-    viewer.data().show_lines = false;
-    viewer.launch();
+    launch_viewer();
+    return 0;
 }
 
 float DistToCentroid(std::vector<int>& cycle)
@@ -1465,8 +1242,6 @@ float DistToCentroid(std::vector<int>& cycle)
 }
 
 bool CompareCycles(std::vector<int>& a, std::vector<int>& b)
-
-
 {
     float pathCostA = 0.0f;
     float pathCostB = 0.0f;
