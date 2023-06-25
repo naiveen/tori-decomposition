@@ -1,43 +1,45 @@
-Include block.h, block.cpp, graph.h, maxflow.cpp, instances.inc as source files on visual studio in order to avoid compilation errors. Or comment the function "cut_graph" and the line "#include "graph.h" to visualize just the fundamental cycles.
+# Tori Decomposition - Mesh processing
 
-# libigl example project
+Atchuth Naveen Chilaparasetti
+  * [LinkedIn](https://www.linkedin.com/in/atchutnaveench/) | [Website](naiveen.github.io)
 
-A blank project example showing how to use libigl and cmake. Feel free and
-encouraged to copy or fork this project as a way of starting a new personal
-project using libigl.
+This code is for finding fundamental cycles and using them to split the mesh into multiple parts of genus 1. The algorithm is presented in the paper [Curvature Aware Fundamental Cycles
+](https://www.ics.uci.edu/~gopi/SamplePubs/CurvatureAwareFCycles.pdf) and its extension [Geometry Aware Tori Decomposition
+](https://onlinelibrary.wiley.com/doi/full/10.1111/cgf.13641)
 
-## See the tutorial first
 
-Then build, run and understand the [libigl
-tutorial](http://libigl.github.io/libigl/tutorial/).
+##Results
 
-## Dependencies
+Fundamental Cycles on Fertility model -  Blue cycles represent tunnels and red cycles represent handles
+![Fertility](images/fertility.gif)
 
-The only dependencies are STL, Eigen, [libigl](http://libigl.github.io/libigl/) and the dependencies
-of the `igl::opengl::glfw::Viewer` (OpenGL, glad and GLFW).
-The CMake build system will automatically download libigl and its dependencies using
-[CMake FetchContent](https://cmake.org/cmake/help/latest/module/FetchContent.html),
-thus requiring no setup on your part.
 
-To use a local copy of libigl rather than downloading the repository via FetchContent, you can use
-the CMake cache variable `FETCHCONTENT_SOURCE_DIR_LIBIGL` when configuring your CMake project for
-the first time:
+Split one torus and cut mesh on Fertility model -  Using geodesic distace between the blue tunnel cycles a dual cut is found (red) and by removing the edges that the cut pass through, the mesh is split into two parts.
+
+![Cut] (images/cut.gif)
+
+
+Cut on Triple Torus.
+
+![torus](images/triple.torus.png)
+
+## Evaluation
+```bash
+#define  primalSpanViewFlag 0  // Setting this flag will show minimum spanning tree found on Primary mesh edges
+#define  dualSpanViewFlag 0 // Setting this flag will show minimum spanning tree found on Dual graph mesh edges
+#define  FERTILITY 0 // Default model is triple torus. Setting this flag will make the code use Fertility model. 
+#define  VISUALIZEHANDLES 1 // To visualize all fundamental cycles both tunnel and handles
+#define  CUTMESH 1 // To split the mesh into two parts, one part will be of genus one
 ```
-cmake -DFETCHCONTENT_SOURCE_DIR_LIBIGL=<path-to-libigl> ..
+
+## Setup Instructions
+Please see additional set up instructions at [Libigl Example Project](https://github.com/libigl/libigl-example-project)
+
+```bash
+mkdir build
+cd build
+cmake ..
 ```
-When changing this value, do not forget to clear your `CMakeCache.txt`, or to update the cache variable
-via `cmake-gui` or `ccmake`.
-
-## Compile
-
-Compile this project using the standard cmake routine:
-
-    mkdir build
-    cd build
-    cmake ..
-    make
-
-This should find and build the dependencies and create a `example_bin` binary.
 
 On Windows,
 From Visual Studio, open tori.sln file in build/.
