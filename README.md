@@ -16,12 +16,12 @@ Fundamental Cycles on Fertility model -  Blue cycles represent tunnels and red c
 
 Split one torus and cut mesh on Fertility model -  Using geodesic distace between the blue tunnel cycles a dual cut is found (red) and by removing the edges that the cut pass through, the mesh is split into two parts.
 
-![Cut] (images/cut.gif)
+![Cut](images/cut.gif)
 
 
 Cut on Triple Torus.
 
-![torus](images/triple.torus.png)
+![torus](images/tripletorus.png)
 
 ## Evaluation
 ```bash
